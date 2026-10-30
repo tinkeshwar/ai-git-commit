@@ -1,6 +1,6 @@
 mod git;
 
-use git::run_git;
+use git::{parse_status, run_git, Status};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -69,11 +69,30 @@ fn remove_repo(app: AppHandle, path: String) -> Result<(), String> {
     save(&app, &repos)
 }
 
+#[tauri::command(async)]
+fn repo_status(path: String) -> Result<Status, String> {
+    let p = Path::new(&path);
+    let mut s = parse_status(&run_git(p, &["status", "--porcelain=v2", "--branch"])?);
+    if s.upstream.is_none() {
+        // no upstream: every local commit counts as unpushed (fails → 0 before the first commit)
+        s.ahead = run_git(p, &["rev-list", "--count", "HEAD"])
+            .ok()
+            .and_then(|c| c.trim().parse().ok())
+            .unwrap_or(0);
+    }
+    Ok(s)
+}
+
+#[tauri::command(async)]
+fn fetch(path: String) -> Result<(), String> {
+    run_git(Path::new(&path), &["fetch", "--prune"]).map(|_| ())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

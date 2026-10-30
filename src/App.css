@@ -14,7 +14,7 @@ body {
 }
 
 .sidebar {
-  width: 240px;
+  width: 300px;
   border-right: 1px solid #8884;
   padding: 8px;
   overflow-y: auto;
@@ -55,5 +55,20 @@ main {
   border: 1px solid #c00;
   padding: 8px;
   white-space: pre-wrap;
+  cursor: pointer;
+}
+
+.sidebar .badge {
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #8883;
+  white-space: nowrap;
+}
+
+.sidebar .badge.err {
+  background: #c00;
+  color: #fff;
+  border: none;
   cursor: pointer;
 }
