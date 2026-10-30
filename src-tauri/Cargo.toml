@@ -1,6 +1,6 @@
 [package]
 name = "git-tool"
-version = "0.1.0"
+version = "1.0.0-dev"
 description = "Desktop git GUI"
 authors = ["Tinkeshwar Singh"]
 edition = "2024"
