@@ -17,4 +17,4 @@ jobs:
       - name: Push to GitHub
         env:
           GH_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
-        run: git push --force "https://x-access-token:${GH_TOKEN}@github.com/tinkeshwar/git-tool.git" "HEAD:${{ github.ref }}"
+        run: git push --force "https://x-access-token:${GH_TOKEN}@github.com/tinkeshwar/ai-git-commit.git" "HEAD:${{ github.ref }}"
