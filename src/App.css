@@ -135,3 +135,18 @@ main {
 .diff .hunk {
   color: #48c;
 }
+
+.commit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.commit textarea {
+  min-height: 60px;
+}
+
+dialog pre {
+  white-space: pre-wrap;
+}

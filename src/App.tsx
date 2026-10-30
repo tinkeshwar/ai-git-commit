@@ -35,6 +35,11 @@ function App() {
   // repo path → checked file paths (memory only)
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [diff, setDiff] = useState<{ file: string; text: string } | null>(null);
+  const [summary, setSummary] = useState("");
+  const [body, setBody] = useState("");
+  // commit_preview output while the confirm modal is open
+  const [preview, setPreview] = useState<string | null>(null);
+  const message = body.trim() ? `${summary}\n\n${body}` : summary;
 
   // Runs a backend call, surfaces git stderr verbatim, then refreshes the list.
   async function call(cmd: string, args?: Record<string, unknown>) {
@@ -89,6 +94,34 @@ function App() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function openPreview(repo: string) {
+    try {
+      setPreview(
+        await invoke<string>("commit_preview", {
+          path: repo,
+          files: picked[repo],
+        }),
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function doCommit(repo: string) {
+    setPreview(null);
+    try {
+      await invoke("commit", { path: repo, files: picked[repo], message });
+      setSummary("");
+      setBody("");
+      setPicked({ ...picked, [repo]: [] });
+      setDiff(null);
+      setError(null);
+    } catch (e) {
+      setError(String(e)); // keep the message for a retry
+    }
+    loadStatuses();
   }
 
   // Window focus: status only. Refresh: fetch all concurrently, then status.
@@ -262,6 +295,44 @@ function App() {
               ))}
             </pre>
           ))}
+        {selected && typeof statuses[selected] === "object" && (
+          <form
+            className="commit"
+            onSubmit={(e) => {
+              e.preventDefault();
+              openPreview(selected);
+            }}
+          >
+            <input
+              placeholder="Summary"
+              aria-label="Commit summary"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+            />
+            <textarea
+              placeholder="Description"
+              aria-label="Commit description"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+            <button disabled={!summary.trim() || !picked[selected]?.length}>
+              Commit {picked[selected]?.length ?? 0} file(s)
+            </button>
+          </form>
+        )}
+        {selected && preview !== null && (
+          <dialog
+            ref={(d) => {
+              if (d && !d.open) d.showModal();
+            }}
+            onClose={() => setPreview(null)}
+          >
+            <pre>{message}</pre>
+            <pre>{preview}</pre>
+            <button onClick={() => doCommit(selected)}>Confirm</button>
+            <button onClick={() => setPreview(null)}>Cancel</button>
+          </dialog>
+        )}
       </main>
     </div>
   );

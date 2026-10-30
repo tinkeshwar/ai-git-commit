@@ -101,11 +101,48 @@ fn file_diff(path: String, file: String, untracked: bool) -> Result<String, Stri
     run_git(p, &["diff", "HEAD", "--", &file])
 }
 
+// `--literal-pathspecs`: file names are paths, never globs
+fn git_files(p: &Path, args: &[&str], files: &[String]) -> Result<String, String> {
+    let mut a = vec!["--literal-pathspecs"];
+    a.extend(args);
+    a.push("--");
+    a.extend(files.iter().map(String::as_str));
+    run_git(p, &a)
+}
+
+#[tauri::command(async)]
+fn commit_preview(path: String, files: Vec<String>) -> Result<String, String> {
+    let p = Path::new(&path);
+    let untracked = git_files(p, &["ls-files", "--others", "--exclude-standard"], &files)?;
+    let untracked: Vec<&str> = untracked.lines().collect();
+    let tracked: Vec<String> = files.iter().filter(|f| !untracked.contains(&f.as_str())).cloned().collect();
+    // an empty pathspec would diff everything
+    let mut out = if tracked.is_empty() {
+        String::new()
+    } else if run_git(p, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+        git_files(p, &["diff", "HEAD", "--stat"], &tracked)?
+    } else {
+        git_files(p, &["diff", "--cached", "--stat"], &tracked)?
+    };
+    for f in untracked {
+        out += &format!(" {f} (new)\n");
+    }
+    Ok(out)
+}
+
+#[tauri::command(async)]
+fn commit(path: String, files: Vec<String>, message: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    git_files(p, &["add", "-A"], &files)?;
+    // pathspec commit: only these files, even if others are staged
+    git_files(p, &["commit", "-m", &message], &files).map(|_| ())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -140,5 +177,38 @@ mod tests {
         assert!(diff("b.txt", false).contains("-bee"));
         assert!(diff("d.txt", false).contains("+sea"));
         assert!(diff("new.txt", true).contains("+fresh"));
+    }
+
+    #[test]
+    fn commit_only_picked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let path = p.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(p, args).unwrap();
+        let v = |fs: &[&str]| fs.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(p.join("first[1].txt"), "x\n").unwrap();
+        commit(path.clone(), v(&["first[1].txt"]), "init".into()).unwrap(); // first commit, glob chars
+        for f in ["a", "b", "c"] {
+            std::fs::write(p.join(f), "1\n").unwrap();
+        }
+        git(&["add", "a", "b", "c"]);
+        git(&["commit", "-qm", "abc"]);
+
+        std::fs::write(p.join("a"), "2\n").unwrap();
+        std::fs::write(p.join("b"), "2\n").unwrap();
+        git(&["add", "b"]); // pre-staged outside the tool
+        std::fs::remove_file(p.join("c")).unwrap();
+        std::fs::write(p.join("new"), "n\n").unwrap();
+
+        let preview = commit_preview(path.clone(), v(&["a", "c", "new"])).unwrap();
+        assert!(preview.contains("a ") && preview.contains("c ") && preview.contains("new (new)"));
+        commit(path.clone(), v(&["a", "c", "new"]), "sum\n\nbody".into()).unwrap();
+
+        assert_eq!(git(&["log", "-1", "--format=%B"]).trim(), "sum\n\nbody");
+        assert_eq!(git(&["show", "--name-only", "--format="]).trim(), "a\nc\nnew");
+        assert_eq!(git(&["status", "--porcelain"]), "M  b\n");
     }
 }
