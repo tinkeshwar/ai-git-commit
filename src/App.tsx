@@ -15,6 +15,71 @@ type Status = {
   files: { path: string; status: string }[];
 };
 
+type Preset = {
+  id: string;
+  base_url: string;
+  needs_key: boolean;
+  model: string;
+};
+type AiView = {
+  provider: string | null;
+  model: string;
+  base_url: string | null;
+  cli_path: string | null;
+  has_key: Record<string, boolean>;
+  presets: Preset[];
+};
+type AiForm = {
+  provider: string;
+  model: string;
+  base_url: string;
+  cli_path: string;
+  key: string;
+  clis: Record<string, string | null>;
+  busy?: boolean;
+  reply?: string;
+  error?: string;
+};
+
+const AI_GROUPS: [string, [string, string][]][] = [
+  [
+    "Cloud",
+    [
+      ["openai", "OpenAI"],
+      ["anthropic", "Anthropic"],
+      ["gemini", "Gemini – free tier"],
+      ["groq", "Groq – free tier"],
+      ["openrouter", "OpenRouter – free models"],
+      ["mistral", "Mistral"],
+      ["deepseek", "DeepSeek"],
+    ],
+  ],
+  [
+    "Local",
+    [
+      ["ollama", "Ollama"],
+      ["lmstudio", "LM Studio"],
+    ],
+  ],
+  ["Custom", [["custom", "Custom (OpenAI-compatible)"]]],
+  [
+    "CLI",
+    [
+      ["claude-cli", "Claude Code"],
+      ["gemini-cli", "Gemini CLI"],
+      ["codex-cli", "Codex"],
+    ],
+  ],
+];
+
+const isCli = (id: string) => id.endsWith("-cli");
+
+// a provider is picked and has a key if it needs one
+const aiReady = (v: AiView | null) => {
+  const p = v?.presets.find((p) => p.id === v.provider);
+  return !!p && (!p.needs_key || !!v!.has_key[p.id]);
+};
+
 const isPending = (s: Status) =>
   s.files.length > 0 || s.ahead > 0 || s.behind > 0;
 
@@ -69,6 +134,12 @@ function App() {
     busy?: boolean;
     error?: string;
   } | null>(null);
+  const [ai, setAi] = useState<AiView | null>(null);
+  const [aiForm, setAiForm] = useState<AiForm | null>(null);
+  // repos with a commit-message generation in flight
+  const [generating, setGenerating] = useState<Record<string, boolean>>({});
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const message = body.trim() ? `${summary}\n\n${body}` : summary;
 
   // Runs a backend call, surfaces git stderr verbatim, then refreshes the list.
@@ -84,7 +155,83 @@ function App() {
 
   useEffect(() => {
     call("list_repos");
+    loadAi().catch((e) => setError(String(e)));
   }, []);
+
+  async function loadAi() {
+    const v = await invoke<AiView>("get_ai_settings");
+    setAi(v);
+    return v;
+  }
+
+  async function openAiSettings() {
+    try {
+      const [v, clis] = await Promise.all([
+        loadAi(),
+        invoke<Record<string, string | null>>("detect_ai_clis"),
+      ]);
+      const provider = v.provider ?? "openai";
+      setAiForm({
+        provider,
+        model: v.model || presetFor(v, provider)?.model || "",
+        base_url: v.base_url ?? "",
+        cli_path: v.cli_path ?? "",
+        key: "",
+        clis,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  const presetFor = (v: AiView | null, id: string) =>
+    v?.presets.find((p) => p.id === id);
+
+  async function saveAi(f: AiForm) {
+    await invoke("set_ai_settings", {
+      provider: f.provider,
+      model: f.model,
+      baseUrl: f.base_url,
+      cliPath: f.cli_path,
+      key: f.key || null, // blank keeps the stored key
+    });
+    await loadAi();
+  }
+
+  async function aiAction(f: AiForm, test: boolean) {
+    setAiForm({ ...f, busy: true, reply: undefined, error: undefined });
+    try {
+      await saveAi(f);
+      if (!test) return setAiForm(null);
+      const reply = await invoke<string>("test_ai");
+      setAiForm({
+        ...f,
+        key: "",
+        busy: false,
+        reply: reply.trim() || "(empty reply)",
+      });
+    } catch (e) {
+      setAiForm({ ...f, busy: false, error: String(e) });
+    }
+  }
+
+  async function generateMessage(repo: string) {
+    setGenerating((g) => ({ ...g, [repo]: true }));
+    try {
+      const m = await invoke<{ summary: string; body: string }>(
+        "generate_commit_message",
+        { path: repo, files: picked[repo] },
+      );
+      // fields are shared across repos: drop the result if the user moved on
+      if (selectedRef.current === repo) {
+        setSummary(m.summary);
+        setBody(m.body);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+    setGenerating((g) => ({ ...g, [repo]: false }));
+  }
 
   async function loadStatuses() {
     const entries = await Promise.all(
@@ -253,6 +400,7 @@ function App() {
   onMenu.current = (id) => {
     if (id === "add_repo") addRepo();
     else if (id === "clone_repo") setClone({ url: "", parent: "" });
+    else if (id === "ai_settings") openAiSettings();
     else if (id === "fetch_all") refresh();
     else if (id === "remove_repo" && selected) removeRepo(selected);
     else if (id === "toggle_sidebar") setSidebarOpen((o) => !o);
@@ -536,6 +684,24 @@ function App() {
                     value={summary}
                     onChange={(e) => setSummary(e.target.value)}
                   />
+                  <button
+                    type="button"
+                    className="icon gen"
+                    aria-label="Generate commit message"
+                    title={
+                      aiReady(ai)
+                        ? "Generate commit message"
+                        : "Set up AI Settings first"
+                    }
+                    disabled={
+                      !aiReady(ai) || !checked.length || generating[selected!]
+                    }
+                    onClick={() => generateMessage(selected!)}
+                  >
+                    <span className={generating[selected!] ? "spin" : ""}>
+                      {generating[selected!] ? "↻" : "✨"}
+                    </span>
+                  </button>
                   {summary.length > 0 && (
                     <span
                       className={summary.length > 72 ? "count over" : "count"}
@@ -679,6 +845,123 @@ function App() {
           </form>
         </dialog>
       )}
+
+      {aiForm &&
+        (() => {
+          const f = aiForm;
+          const p = presetFor(ai, f.provider);
+          const set = (patch: Partial<AiForm>) =>
+            setAiForm({ ...f, ...patch, reply: undefined, error: undefined });
+          return (
+            <dialog
+              ref={(d) => {
+                if (d && !d.open) d.showModal();
+              }}
+              onClose={() => setAiForm(null)}
+            >
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  aiAction(f, false);
+                }}
+              >
+                <h3>AI Settings</h3>
+                <div className="fields">
+                  <label>
+                    Provider
+                    <select
+                      value={f.provider}
+                      disabled={f.busy}
+                      onChange={(e) =>
+                        set({
+                          provider: e.target.value,
+                          model: presetFor(ai, e.target.value)?.model ?? "",
+                          key: "",
+                        })
+                      }
+                    >
+                      {AI_GROUPS.map(([group, items]) => (
+                        <optgroup key={group} label={group}>
+                          {items.map(([id, label]) => {
+                            const missing = isCli(id) && !f.clis[id];
+                            return (
+                              <option key={id} value={id} disabled={missing}>
+                                {label}
+                                {missing ? " (not found)" : ""}
+                              </option>
+                            );
+                          })}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                  {!isCli(f.provider) && (
+                    <label>
+                      Model
+                      <input
+                        value={f.model}
+                        disabled={f.busy}
+                        onChange={(e) => set({ model: e.target.value })}
+                      />
+                    </label>
+                  )}
+                  {p?.needs_key && (
+                    <label>
+                      API key
+                      <input
+                        type="password"
+                        placeholder={ai?.has_key[f.provider] ? "saved" : ""}
+                        value={f.key}
+                        disabled={f.busy}
+                        onChange={(e) => set({ key: e.target.value })}
+                      />
+                    </label>
+                  )}
+                  {f.provider === "custom" && (
+                    <label>
+                      Base URL
+                      <input
+                        placeholder="https://host/v1"
+                        value={f.base_url}
+                        disabled={f.busy}
+                        onChange={(e) => set({ base_url: e.target.value })}
+                      />
+                    </label>
+                  )}
+                  {isCli(f.provider) && (
+                    <label>
+                      CLI path
+                      <input
+                        placeholder={f.clis[f.provider] ?? "auto-detect"}
+                        value={f.cli_path}
+                        disabled={f.busy}
+                        onChange={(e) => set({ cli_path: e.target.value })}
+                      />
+                    </label>
+                  )}
+                  {f.reply && <pre className="ok">{f.reply}</pre>}
+                  {f.error && <pre className="err-text">{f.error}</pre>}
+                </div>
+                <footer>
+                  <button type="button" onClick={() => setAiForm(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={f.busy}
+                    onClick={() => aiAction(f, true)}
+                  >
+                    {f.busy && <span className="spin">↻</span>}
+                    Test
+                  </button>
+                  <button className="primary" disabled={f.busy}>
+                    Save
+                  </button>
+                </footer>
+              </form>
+            </dialog>
+          );
+        })()}
 
       {preview && (
         <dialog

@@ -145,6 +145,8 @@ input[type="checkbox"] {
 }
 
 input:not([type]),
+input[type="password"],
+select,
 textarea {
   font: inherit;
   color: inherit;
@@ -156,6 +158,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--accent);
   outline: none;
@@ -584,13 +587,13 @@ button.badge.err {
 }
 
 .commit .summary input {
-  padding-right: 40px;
+  padding-right: 72px;
   font-weight: 500;
 }
 
 .commit .count {
   position: absolute;
-  right: 10px;
+  right: 38px;
   top: 50%;
   transform: translateY(-50%);
   font-size: 11px;
@@ -600,6 +603,15 @@ button.badge.err {
 
 .commit .count.over {
   color: var(--del);
+}
+
+.commit .summary button.gen {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0;
+  font-size: 15px;
 }
 
 .commit textarea {
@@ -766,6 +778,11 @@ dialog .pick {
 
 dialog .pick input {
   cursor: pointer;
+}
+
+dialog .fields .ok {
+  background: var(--add-bg);
+  color: var(--add);
 }
 
 dialog .fields pre {

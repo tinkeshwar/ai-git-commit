@@ -1,3 +1,4 @@
+mod ai;
 mod git;
 
 use git::{parse_status, run_git, run_git_codes, Status};
@@ -13,14 +14,14 @@ struct Repo {
     branch: Option<String>,
 }
 
-fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn store_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("repos.json"))
+    Ok(dir.join(name))
 }
 
 fn load(app: &AppHandle) -> Result<Vec<String>, String> {
-    match std::fs::read_to_string(store_path(app)?) {
+    match std::fs::read_to_string(store_path(app, "repos.json")?) {
         Ok(s) => serde_json::from_str(&s).map_err(|e| format!("repos.json: {e}")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(e) => Err(e.to_string()),
@@ -29,7 +30,7 @@ fn load(app: &AppHandle) -> Result<Vec<String>, String> {
 
 fn save(app: &AppHandle, repos: &[String]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(repos).map_err(|e| e.to_string())?;
-    std::fs::write(store_path(app)?, json).map_err(|e| e.to_string())
+    std::fs::write(store_path(app, "repos.json")?, json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -132,16 +133,26 @@ fn git_files(p: &Path, args: &[&str], files: &[String]) -> Result<String, String
     run_git(p, &a)
 }
 
+fn has_head(p: &Path) -> bool {
+    run_git(p, &["rev-parse", "--verify", "HEAD"]).is_ok()
+}
+
+/// `files` → `(tracked, untracked)`
+fn split_files(p: &Path, files: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    let untracked = git_files(p, &["ls-files", "--others", "--exclude-standard"], files)?;
+    let untracked: Vec<String> = untracked.lines().map(String::from).collect();
+    let tracked = files.iter().filter(|f| !untracked.contains(f)).cloned().collect();
+    Ok((tracked, untracked))
+}
+
 #[tauri::command(async)]
 fn commit_preview(path: String, files: Vec<String>) -> Result<String, String> {
     let p = Path::new(&path);
-    let untracked = git_files(p, &["ls-files", "--others", "--exclude-standard"], &files)?;
-    let untracked: Vec<&str> = untracked.lines().collect();
-    let tracked: Vec<String> = files.iter().filter(|f| !untracked.contains(&f.as_str())).cloned().collect();
+    let (tracked, untracked) = split_files(p, &files)?;
     // an empty pathspec would diff everything
     let mut out = if tracked.is_empty() {
         String::new()
-    } else if run_git(p, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+    } else if has_head(p) {
         git_files(p, &["diff", "HEAD", "--stat"], &tracked)?
     } else {
         git_files(p, &["diff", "--cached", "--stat"], &tracked)?
@@ -209,6 +220,49 @@ fn pull(path: String) -> Result<(), String> {
     })
 }
 
+#[tauri::command]
+fn get_ai_settings(app: AppHandle) -> Result<ai::View, String> {
+    Ok(ai::load(&store_path(&app, "ai.json")?)?.view())
+}
+
+#[tauri::command]
+fn set_ai_settings(
+    app: AppHandle,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+    cli_path: Option<String>,
+    key: Option<String>,
+) -> Result<(), String> {
+    let path = store_path(&app, "ai.json")?;
+    let mut s = ai::load(&path)?;
+    s.set(provider, model, base_url, cli_path, key)?;
+    ai::save(&path, &s)
+}
+
+#[tauri::command(async)]
+fn detect_ai_clis() -> std::collections::HashMap<String, Option<String>> {
+    ai::detect_ai_clis().clone()
+}
+
+#[tauri::command(async)]
+fn test_ai(app: AppHandle) -> Result<String, String> {
+    ai::chat(&ai::load(&store_path(&app, "ai.json")?)?, "You are a connectivity check.", "Reply with: ok")
+}
+
+#[derive(Serialize)]
+struct CommitMessage {
+    summary: String,
+    body: String,
+}
+
+#[tauri::command(async)]
+fn generate_commit_message(app: AppHandle, path: String, files: Vec<String>) -> Result<CommitMessage, String> {
+    let s = ai::load(&store_path(&app, "ai.json")?)?;
+    let (summary, body) = ai::generate(&s, &path, &files)?;
+    Ok(CommitMessage { summary, body })
+}
+
 /// Platform default menu (keeps Edit → copy/paste) with our items prepended to File / View.
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::default(app)?;
@@ -229,6 +283,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     file.prepend_items(&[
         &item("add_repo", "Add Repository…", Some("CmdOrCtrl+O"))?,
         &item("clone_repo", "Clone Repository…", Some("CmdOrCtrl+Shift+O"))?,
+        &item("ai_settings", "AI Settings…", None)?,
         &PredefinedMenuItem::separator(app)?,
         &item("fetch_all", "Fetch All", Some("CmdOrCtrl+Shift+F"))?,
         &item("remove_repo", "Remove Repository from List", None)?,
@@ -254,7 +309,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, clone_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push, pull_preview, pull])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, clone_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push, pull_preview, pull, get_ai_settings, set_ai_settings, generate_commit_message, detect_ai_clis, test_ai])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
