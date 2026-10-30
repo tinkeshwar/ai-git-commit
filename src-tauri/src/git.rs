@@ -4,6 +4,11 @@ use std::process::Command;
 
 /// Runs `git <args>` in `repo`. Non-zero exit → `Err(stderr)`.
 pub fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
+    run_git_codes(repo, args, &[0])
+}
+
+/// Like `run_git`, but any exit code in `ok` counts as success (`diff --no-index` exits 1 on differences).
+pub fn run_git_codes(repo: &Path, args: &[&str], ok: &[i32]) -> Result<String, String> {
     let out = Command::new("git")
         .args(args)
         .current_dir(repo)
@@ -11,7 +16,7 @@ pub fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("failed to run git: {e}"))?;
-    if out.status.success() {
+    if out.status.code().is_some_and(|c| ok.contains(&c)) {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())

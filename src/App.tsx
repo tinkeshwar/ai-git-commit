@@ -15,6 +15,15 @@ type Status = {
 const isPending = (s: Status) =>
   s.files.length > 0 || s.ahead > 0 || s.behind > 0;
 
+const lineClass = (l: string) =>
+  l.startsWith("@@")
+    ? "hunk"
+    : l[0] === "+"
+      ? "add"
+      : l[0] === "-"
+        ? "del"
+        : "";
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +31,10 @@ function App() {
   const [statuses, setStatuses] = useState<Record<string, Status | string>>({});
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({});
   const [pendingOnly, setPendingOnly] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  // repo path → checked file paths (memory only)
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [diff, setDiff] = useState<{ file: string; text: string } | null>(null);
 
   // Runs a backend call, surfaces git stderr verbatim, then refreshes the list.
   async function call(cmd: string, args?: Record<string, unknown>) {
@@ -47,7 +60,35 @@ function App() {
         ),
       ),
     );
-    setStatuses(Object.fromEntries(entries));
+    const next: Record<string, Status | string> = Object.fromEntries(entries);
+    setStatuses(next);
+    // drop checked files that are no longer changed
+    setPicked((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).map(([repo, files]) => {
+          const s = next[repo];
+          return [
+            repo,
+            typeof s === "object"
+              ? files.filter((f) => s.files.some((x) => x.path === f))
+              : files,
+          ];
+        }),
+      ),
+    );
+  }
+
+  async function showDiff(repo: string, file: string, untracked: boolean) {
+    try {
+      const text = await invoke<string>("file_diff", {
+        path: repo,
+        file,
+        untracked,
+      });
+      setDiff({ file, text });
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   // Window focus: status only. Refresh: fetch all concurrently, then status.
@@ -98,8 +139,20 @@ function App() {
             if (pendingOnly && !err && typeof s === "object" && !isPending(s))
               return null;
             return (
-              <li key={r.path} title={r.path}>
-                <span className="name">{r.name}</span>
+              <li
+                key={r.path}
+                title={r.path}
+                className={r.path === selected ? "selected" : ""}
+              >
+                <span
+                  className="name"
+                  onClick={() => {
+                    setSelected(r.path);
+                    setDiff(null);
+                  }}
+                >
+                  {r.name}
+                </span>
                 <span className="branch">{r.branch ?? "—"}</span>
                 {typeof s === "object" && (
                   <>
@@ -132,12 +185,83 @@ function App() {
           })}
         </ul>
       </aside>
+      {selected && typeof statuses[selected] === "object" && (
+        <section className="files">
+          {(() => {
+            const files = (statuses[selected] as Status).files;
+            const checked = picked[selected] ?? [];
+            const setChecked = (c: string[]) =>
+              setPicked({ ...picked, [selected]: c });
+            return (
+              <>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={
+                      files.length > 0 && checked.length === files.length
+                    }
+                    onChange={(e) =>
+                      setChecked(
+                        e.target.checked ? files.map((f) => f.path) : [],
+                      )
+                    }
+                  />
+                  {files.length} changed
+                </label>
+                <ul>
+                  {files.map((f) => (
+                    <li
+                      key={f.path}
+                      className={diff?.file === f.path ? "selected" : ""}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${f.path}`}
+                        checked={checked.includes(f.path)}
+                        onChange={(e) =>
+                          setChecked(
+                            e.target.checked
+                              ? [...checked, f.path]
+                              : checked.filter((c) => c !== f.path),
+                          )
+                        }
+                      />
+                      <span className="status">{f.status}</span>
+                      <span
+                        className="name"
+                        title={f.path}
+                        onClick={() =>
+                          showDiff(selected, f.path, f.status === "?")
+                        }
+                      >
+                        {f.path}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            );
+          })()}
+        </section>
+      )}
       <main>
         {error && (
           <pre className="error" onClick={() => setError(null)}>
             {error}
           </pre>
         )}
+        {diff &&
+          (/^Binary files .* differ$/m.test(diff.text) ? (
+            <p>Binary file</p>
+          ) : (
+            <pre className="diff">
+              {diff.text.split("\n").map((l, i) => (
+                <div key={i} className={lineClass(l)}>
+                  {l || " "}
+                </div>
+              ))}
+            </pre>
+          ))}
       </main>
     </div>
   );

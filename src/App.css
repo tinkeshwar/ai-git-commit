@@ -72,3 +72,66 @@ main {
   border: none;
   cursor: pointer;
 }
+
+.sidebar .name,
+.files .name {
+  cursor: pointer;
+}
+
+.sidebar li.selected,
+.files li.selected {
+  background: #8882;
+}
+
+.files {
+  width: 300px;
+  border-right: 1px solid #8884;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.files ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.files li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.files .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files .status {
+  font-family: ui-monospace, monospace;
+  width: 1ch;
+}
+
+main {
+  overflow: auto;
+}
+
+.diff {
+  margin: 0;
+  font-size: 12px;
+}
+
+.diff .add {
+  background: #2a43;
+}
+
+.diff .del {
+  background: #c003;
+}
+
+.diff .hunk {
+  color: #48c;
+}

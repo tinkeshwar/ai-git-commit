@@ -1,6 +1,6 @@
 mod git;
 
-use git::{parse_status, run_git, Status};
+use git::{parse_status, run_git, run_git_codes, Status};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -88,11 +88,57 @@ fn fetch(path: String) -> Result<(), String> {
     run_git(Path::new(&path), &["fetch", "--prune"]).map(|_| ())
 }
 
+#[tauri::command(async)]
+fn file_diff(path: String, file: String, untracked: bool) -> Result<String, String> {
+    let p = Path::new(&path);
+    if untracked {
+        return run_git_codes(p, &["diff", "--no-index", "--", "/dev/null", &file], &[0, 1]);
+    }
+    if run_git(p, &["rev-parse", "--verify", "HEAD"]).is_err() {
+        // no commits yet: everything tracked is staged-new
+        return run_git(p, &["diff", "--cached", "--", &file]);
+    }
+    run_git(p, &["diff", "HEAD", "--", &file])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_diff_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let path = p.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(p, args).unwrap();
+        let diff = |f: &str, u| file_diff(path.clone(), f.into(), u).unwrap();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(p.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        assert!(diff("a.txt", false).contains("+one")); // no commits yet
+        std::fs::write(p.join("b.txt"), "bee\n").unwrap();
+        std::fs::write(p.join("c.txt"), "sea\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        std::fs::write(p.join("a.txt"), "two\n").unwrap();
+        std::fs::remove_file(p.join("b.txt")).unwrap();
+        git(&["mv", "c.txt", "d.txt"]);
+        std::fs::write(p.join("new.txt"), "fresh\n").unwrap();
+        assert!(diff("a.txt", false).contains("-one\n+two"));
+        assert!(diff("b.txt", false).contains("-bee"));
+        assert!(diff("d.txt", false).contains("+sea"));
+        assert!(diff("new.txt", true).contains("+fresh"));
+    }
 }
