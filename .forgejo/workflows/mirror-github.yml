@@ -8,6 +8,8 @@ on:
 jobs:
   mirror:
     runs-on: docker
+    container:
+      image: node:24-bookworm
     steps:
       - uses: actions/checkout@v7
         with:
