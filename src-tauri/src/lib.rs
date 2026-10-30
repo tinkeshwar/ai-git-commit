@@ -298,7 +298,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Finder-launched apps get PATH=/usr/bin:/bin:..., missing Homebrew git, git-lfs, `gh` credential helpers.
+/// Adopt the login shell's PATH; keep the inherited one if the shell fails.
+#[cfg(target_os = "macos")]
+fn import_login_path() {
+    let shell = std::env::var("SHELL").unwrap_or("/bin/zsh".into());
+    let Ok(out) = std::process::Command::new(shell).args(["-lc", "printf %s \"$PATH\""]).output() else { return };
+    let path = String::from_utf8_lossy(&out.stdout);
+    // rc files may print noise first; PATH is the last line
+    if let Some(path) = path.lines().last().filter(|p| p.contains('/')) {
+        // SAFETY: called first thing in `run`, before any other thread exists
+        unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    import_login_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
