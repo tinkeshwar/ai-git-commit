@@ -1,0 +1,59 @@
+:root {
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 240px;
+  border-right: 1px solid #8884;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.sidebar li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.sidebar .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar .branch {
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+main {
+  flex: 1;
+  padding: 8px;
+}
+
+.error {
+  background: #c003;
+  border: 1px solid #c00;
+  padding: 8px;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
