@@ -559,6 +559,17 @@ function App() {
             })}
           </ul>
         )}
+        <footer className="side-foot">
+          <button
+            className="settings"
+            aria-label="Settings"
+            title="AI Settings"
+            onClick={openAiSettings}
+          >
+            <span className="gear">⚙</span>
+            <span className="label">Settings</span>
+          </button>
+        </footer>
       </aside>
 
       {selRepo && (
@@ -686,7 +697,7 @@ function App() {
                   />
                   <button
                     type="button"
-                    className="icon gen"
+                    className="gen"
                     aria-label="Generate commit message"
                     title={
                       aiReady(ai)
@@ -698,9 +709,10 @@ function App() {
                     }
                     onClick={() => generateMessage(selected!)}
                   >
-                    <span className={generating[selected!] ? "spin" : ""}>
-                      {generating[selected!] ? "↻" : "✨"}
+                    <span className={generating[selected!] ? "twinkle" : ""}>
+                      ✨
                     </span>
+                    AI
                   </button>
                   {summary.length > 0 && (
                     <span
