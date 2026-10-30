@@ -138,11 +138,42 @@ fn commit(path: String, files: Vec<String>, message: String) -> Result<(), Strin
     git_files(p, &["commit", "-m", &message], &files).map(|_| ())
 }
 
+// no upstream → `-u origin <branch>` so the first push sets it
+fn git_push(p: &Path, dry: bool) -> Result<String, String> {
+    let branch = run_git(p, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
+    let mut a = vec!["push", "--porcelain"];
+    if dry {
+        a.push("--dry-run");
+    }
+    if run_git(p, &["rev-parse", "--abbrev-ref", "@{u}"]).is_err() {
+        a.extend(["-u", "origin", &branch]);
+    }
+    run_git(p, &a).map_err(|e| {
+        if e.contains("failed to push some refs") { format!("{e}\n\nRejected: pull first.") } else { e }
+    })
+}
+
+#[tauri::command(async)]
+fn push_dry_run(path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    let refs = git_push(p, true)?;
+    let log = match run_git(p, &["log", "--oneline", "@{u}..HEAD"]) {
+        Ok(l) => l,
+        Err(_) => format!("will set upstream\n{}", run_git(p, &["log", "--oneline", "-50", "HEAD"])?),
+    };
+    Ok(format!("{refs}\n{log}"))
+}
+
+#[tauri::command(async)]
+fn push(path: String) -> Result<(), String> {
+    git_push(Path::new(&path), false).map(|_| ())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -210,5 +241,41 @@ mod tests {
         assert_eq!(git(&["log", "-1", "--format=%B"]).trim(), "sum\n\nbody");
         assert_eq!(git(&["show", "--name-only", "--format="]).trim(), "a\nc\nnew");
         assert_eq!(git(&["status", "--porcelain"]), "M  b\n");
+    }
+
+    #[test]
+    fn push_with_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let (remote, a, b) = (dir.path().join("r.git"), dir.path().join("a"), dir.path().join("b"));
+        run_git(dir.path(), &["init", "-q", "--bare", "r.git"]).unwrap();
+        for d in [&a, &b] {
+            run_git(dir.path(), &["clone", "-q", remote.to_str().unwrap(), d.to_str().unwrap()]).unwrap();
+            run_git(d, &["config", "user.email", "t@t"]).unwrap();
+            run_git(d, &["config", "user.name", "t"]).unwrap();
+        }
+        let git = |d: &Path, args: &[&str]| run_git(d, args).unwrap();
+        let s = |d: &Path| d.to_string_lossy().to_string();
+
+        // no upstream yet: preview flags it, push sets it
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        let pv = push_dry_run(s(&a)).unwrap();
+        assert!(pv.contains("will set upstream") && pv.contains("c1"));
+        push(s(&a)).unwrap();
+        assert!(git(&a, &["rev-parse", "--abbrev-ref", "@{u}"]).contains("origin/"));
+
+        // upstream set: preview lists exactly the unpushed commits
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "three"]);
+        let pv = push_dry_run(s(&a)).unwrap();
+        assert!(pv.contains("two") && pv.contains("three") && !pv.contains("c1"));
+        push(s(&a)).unwrap();
+        assert_eq!(repo_status(s(&a)).unwrap().ahead, 0);
+
+        // b is behind and diverged: rejected with a hint
+        git(&b, &["pull", "-q"]);
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "four"]);
+        push(s(&a)).unwrap();
+        git(&b, &["commit", "-q", "--allow-empty", "-m", "five"]);
+        assert!(push(s(&b)).unwrap_err().contains("pull first"));
     }
 }

@@ -37,8 +37,13 @@ function App() {
   const [diff, setDiff] = useState<{ file: string; text: string } | null>(null);
   const [summary, setSummary] = useState("");
   const [body, setBody] = useState("");
-  // commit_preview output while the confirm modal is open
-  const [preview, setPreview] = useState<string | null>(null);
+  // confirm modal: preview text + what Confirm runs
+  const [preview, setPreview] = useState<{
+    text: string;
+    confirm: () => void;
+  } | null>(null);
+  // repos with a push in flight
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
   const message = body.trim() ? `${summary}\n\n${body}` : summary;
 
   // Runs a backend call, surfaces git stderr verbatim, then refreshes the list.
@@ -98,12 +103,14 @@ function App() {
 
   async function openPreview(repo: string) {
     try {
-      setPreview(
-        await invoke<string>("commit_preview", {
-          path: repo,
-          files: picked[repo],
-        }),
-      );
+      const stat = await invoke<string>("commit_preview", {
+        path: repo,
+        files: picked[repo],
+      });
+      setPreview({
+        text: `${message}\n\n${stat}`,
+        confirm: () => doCommit(repo),
+      });
     } catch (e) {
       setError(String(e));
     }
@@ -123,6 +130,31 @@ function App() {
     }
     loadStatuses();
   }
+
+  // Network calls: mark the repo busy so its buttons disable meanwhile.
+  async function withBusy(repo: string, f: () => Promise<void>) {
+    setBusy((b) => ({ ...b, [repo]: true }));
+    try {
+      await f();
+    } catch (e) {
+      setError(String(e));
+    }
+    setBusy((b) => ({ ...b, [repo]: false }));
+  }
+
+  const openPush = (repo: string) =>
+    withBusy(repo, async () => {
+      const text = await invoke<string>("push_dry_run", { path: repo });
+      setPreview({ text, confirm: () => doPush(repo) });
+    });
+
+  const doPush = (repo: string) => {
+    setPreview(null);
+    return withBusy(repo, async () => {
+      await invoke("push", { path: repo });
+      setError(null);
+    }).then(loadStatuses);
+  };
 
   // Window focus: status only. Refresh: fetch all concurrently, then status.
   useEffect(() => {
@@ -227,6 +259,19 @@ function App() {
               setPicked({ ...picked, [selected]: c });
             return (
               <>
+                {(() => {
+                  const s = statuses[selected] as Status;
+                  return (
+                    <button
+                      disabled={
+                        busy[selected] || (s.ahead === 0 && !!s.upstream)
+                      }
+                      onClick={() => openPush(selected)}
+                    >
+                      {busy[selected] ? "Pushing…" : `Push ↑${s.ahead}`}
+                    </button>
+                  );
+                })()}
                 <label>
                   <input
                     type="checkbox"
@@ -320,16 +365,15 @@ function App() {
             </button>
           </form>
         )}
-        {selected && preview !== null && (
+        {preview && (
           <dialog
             ref={(d) => {
               if (d && !d.open) d.showModal();
             }}
             onClose={() => setPreview(null)}
           >
-            <pre>{message}</pre>
-            <pre>{preview}</pre>
-            <button onClick={() => doCommit(selected)}>Confirm</button>
+            <pre>{preview.text}</pre>
+            <button onClick={preview.confirm}>Confirm</button>
             <button onClick={() => setPreview(null)}>Cancel</button>
           </dialog>
         )}
