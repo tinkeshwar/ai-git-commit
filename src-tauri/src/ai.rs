@@ -172,7 +172,7 @@ pub fn build_prompt(stat_and_diff: &str) -> (String, String) {
     let system = "You write git commit messages in the Conventional Commits format.\n\
         First line: `type(scope): summary`, at most 72 characters, imperative mood \
         (type is one of feat, fix, refactor, perf, docs, style, test, build, ci, chore; scope is optional).\n\
-        Then, only if useful, a blank line and a short body explaining what and why.\n\
+        Then always a blank line and a body of 1-3 short sentences or bullet lines explaining what changed and why (never omit the body).\n\
         Reply with the commit message only: plain text, no markdown, no code fences, no quotes.";
     let user = format!("Write a commit message for these changes:\n\n{stat_and_diff}");
     (system.into(), user)
