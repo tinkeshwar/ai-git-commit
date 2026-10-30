@@ -374,14 +374,14 @@ li.selected .avatar {
 
 /* ---------- collapsed rail ---------- */
 
-.collapsed .pane-head {
+.collapsed .sidebar .pane-head {
   justify-content: center;
   padding: 8px 0;
 }
 
-.collapsed .pane-head h1,
-.collapsed .pane-head button:not(:first-child),
-.collapsed .toggle,
+.collapsed .sidebar .pane-head h1,
+.collapsed .sidebar .pane-head button:not(:first-child),
+.collapsed .sidebar .toggle,
 .collapsed .repo-text,
 .collapsed .badges,
 .collapsed .remove {
