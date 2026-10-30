@@ -42,7 +42,7 @@ function App() {
     text: string;
     confirm: () => void;
   } | null>(null);
-  // repos with a push in flight
+  // repos with a push/pull in flight
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const message = body.trim() ? `${summary}\n\n${body}` : summary;
 
@@ -142,16 +142,17 @@ function App() {
     setBusy((b) => ({ ...b, [repo]: false }));
   }
 
-  const openPush = (repo: string) =>
+  // push/pull: preview command → modal → Confirm runs `cmd`
+  const openRemote = (repo: string, previewCmd: string, cmd: string) =>
     withBusy(repo, async () => {
-      const text = await invoke<string>("push_dry_run", { path: repo });
-      setPreview({ text, confirm: () => doPush(repo) });
+      const text = await invoke<string>(previewCmd, { path: repo });
+      setPreview({ text, confirm: () => doRemote(repo, cmd) });
     });
 
-  const doPush = (repo: string) => {
+  const doRemote = (repo: string, cmd: string) => {
     setPreview(null);
     return withBusy(repo, async () => {
-      await invoke("push", { path: repo });
+      await invoke(cmd, { path: repo });
       setError(null);
     }).then(loadStatuses);
   };
@@ -262,14 +263,27 @@ function App() {
                 {(() => {
                   const s = statuses[selected] as Status;
                   return (
-                    <button
-                      disabled={
-                        busy[selected] || (s.ahead === 0 && !!s.upstream)
-                      }
-                      onClick={() => openPush(selected)}
-                    >
-                      {busy[selected] ? "Pushing…" : `Push ↑${s.ahead}`}
-                    </button>
+                    <>
+                      <button
+                        disabled={
+                          busy[selected] || (s.ahead === 0 && !!s.upstream)
+                        }
+                        onClick={() =>
+                          openRemote(selected, "push_dry_run", "push")
+                        }
+                      >
+                        Push ↑{s.ahead}
+                      </button>
+                      <button
+                        disabled={busy[selected] || !s.upstream}
+                        onClick={() =>
+                          openRemote(selected, "pull_preview", "pull")
+                        }
+                      >
+                        Pull ↓{s.behind}
+                      </button>
+                      {busy[selected] && <span>Working…</span>}
+                    </>
                   );
                 })()}
                 <label>

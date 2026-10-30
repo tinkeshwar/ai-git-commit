@@ -169,11 +169,29 @@ fn push(path: String) -> Result<(), String> {
     git_push(Path::new(&path), false).map(|_| ())
 }
 
+#[tauri::command(async)]
+fn pull_preview(path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    run_git(p, &["fetch"])?;
+    let log = run_git(p, &["log", "--oneline", "HEAD..@{u}"])?;
+    let stat = run_git(p, &["diff", "--stat", "HEAD...@{u}"])?;
+    let diverged = run_git(p, &["rev-list", "--count", "@{u}..HEAD"])?.trim() != "0";
+    let warn = if diverged { "Diverged: ff-only pull will be refused.\n\n" } else { "" };
+    Ok(format!("{warn}{log}\n{stat}"))
+}
+
+#[tauri::command(async)]
+fn pull(path: String) -> Result<(), String> {
+    run_git(Path::new(&path), &["pull", "--ff-only"]).map(|_| ()).map_err(|e| {
+        if e.contains("fast-forward") { format!("{e}\n\nff-only refused: branch has diverged, resolve in terminal.") } else { e }
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push])
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push, pull_preview, pull])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -277,5 +295,43 @@ mod tests {
         push(s(&a)).unwrap();
         git(&b, &["commit", "-q", "--allow-empty", "-m", "five"]);
         assert!(push(s(&b)).unwrap_err().contains("pull first"));
+    }
+
+    #[test]
+    fn pull_with_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let (remote, a, b) = (dir.path().join("r.git"), dir.path().join("a"), dir.path().join("b"));
+        run_git(dir.path(), &["init", "-q", "--bare", "r.git"]).unwrap();
+        for d in [&a, &b] {
+            run_git(dir.path(), &["clone", "-q", remote.to_str().unwrap(), d.to_str().unwrap()]).unwrap();
+            run_git(d, &["config", "user.email", "t@t"]).unwrap();
+            run_git(d, &["config", "user.name", "t"]).unwrap();
+        }
+        let git = |d: &Path, args: &[&str]| run_git(d, args).unwrap();
+        let s = |d: &Path| d.to_string_lossy().to_string();
+
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        push(s(&a)).unwrap();
+        git(&b, &["pull", "-q"]);
+
+        // b behind by two: preview lists exactly those, pull fast-forwards
+        std::fs::write(a.join("f.txt"), "x\n").unwrap();
+        git(&a, &["add", "f.txt"]);
+        git(&a, &["commit", "-q", "-m", "two"]);
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "three"]);
+        push(s(&a)).unwrap();
+        let pv = pull_preview(s(&b)).unwrap();
+        assert!(pv.contains("two") && pv.contains("three") && pv.contains("f.txt") && !pv.contains("c1"));
+        assert!(!pv.contains("Diverged"));
+        pull(s(&b)).unwrap();
+        assert_eq!(repo_status(s(&b)).unwrap().behind, 0);
+
+        // diverged: warned, refused, no merge commit
+        git(&a, &["commit", "-q", "--allow-empty", "-m", "four"]);
+        push(s(&a)).unwrap();
+        git(&b, &["commit", "-q", "--allow-empty", "-m", "five"]);
+        assert!(pull_preview(s(&b)).unwrap().contains("Diverged"));
+        assert!(pull(s(&b)).unwrap_err().contains("ff-only refused"));
+        assert_eq!(git(&b, &["log", "-1", "--format=%s"]).trim(), "five");
     }
 }
