@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
@@ -26,6 +27,18 @@ const lineClass = (l: string) =>
         ? "del"
         : "";
 
+// "my-git_tool" → "MG", "web" → "WE"
+const initials = (name: string) => {
+  const words = name.split(/[\s._-]+/).filter(Boolean);
+  return (
+    words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)
+  ).toUpperCase();
+};
+
+// stable per-name avatar color
+const hue = (name: string) =>
+  [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+
 function App() {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +61,14 @@ function App() {
   // repos with a push/pull in flight
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
+  // sidebar shows full list only while no repo is selected, or when toggled open
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [clone, setClone] = useState<{
+    url: string;
+    parent: string;
+    busy?: boolean;
+    error?: string;
+  } | null>(null);
   const message = body.trim() ? `${summary}\n\n${body}` : summary;
 
   // Runs a backend call, surfaces git stderr verbatim, then refreshes the list.
@@ -192,16 +213,83 @@ function App() {
     if (path) call("add_repo", { path });
   }
 
+  function selectRepo(path: string) {
+    setSelected(path);
+    setDiff(null);
+    setSidebarOpen(false);
+  }
+
+  function removeRepo(path: string) {
+    if (path === selected) {
+      setSelected(null);
+      setDiff(null);
+    }
+    call("remove_repo", { path });
+  }
+
+  async function pickCloneParent() {
+    const parent = await open({ directory: true });
+    if (parent && clone) setClone({ ...clone, parent });
+  }
+
+  async function doClone() {
+    if (!clone) return;
+    setClone({ ...clone, busy: true, error: undefined });
+    try {
+      const path = await invoke<string>("clone_repo", {
+        url: clone.url,
+        parent: clone.parent,
+      });
+      setClone(null);
+      await call("list_repos");
+      selectRepo(path);
+    } catch (e) {
+      setClone({ ...clone, busy: false, error: String(e) });
+    }
+  }
+
+  // Native menu items (built in lib.rs) arrive as "menu" events carrying the item id.
+  const onMenu = useRef<(id: string) => void>(() => {});
+  onMenu.current = (id) => {
+    if (id === "add_repo") addRepo();
+    else if (id === "clone_repo") setClone({ url: "", parent: "" });
+    else if (id === "fetch_all") refresh();
+    else if (id === "remove_repo" && selected) removeRepo(selected);
+    else if (id === "toggle_sidebar") setSidebarOpen((o) => !o);
+  };
+  useEffect(() => {
+    const un = listen<string>("menu", (e) => onMenu.current(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   const sel = selected ? statuses[selected] : undefined;
   const selRepo = repos.find((r) => r.path === selected);
   const checked = (selected && picked[selected]) || [];
   const setChecked = (c: string[]) =>
     selected && setPicked({ ...picked, [selected]: c });
 
+  const collapsed = !!selRepo && !sidebarOpen;
+
   return (
-    <div className="app">
+    <div
+      className={`app${selRepo ? " has-repo" : ""}${collapsed ? " collapsed" : ""}`}
+    >
       <aside className="sidebar">
         <header className="pane-head">
+          {selRepo && (
+            <button
+              className="icon"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={
+                collapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"
+              }
+              onClick={() => setSidebarOpen(collapsed)}
+            >
+              {collapsed ? "☰" : "‹"}
+            </button>
+          )}
           <h1>Repositories</h1>
           <button
             className="icon"
@@ -237,6 +325,9 @@ function App() {
             <button className="primary" onClick={addRepo}>
               Add repository
             </button>
+            <button onClick={() => setClone({ url: "", parent: "" })}>
+              Clone repository
+            </button>
           </div>
         ) : (
           <ul className="repo-list">
@@ -250,26 +341,42 @@ function App() {
               return (
                 <li
                   key={r.path}
-                  className={r.path === selected ? "selected" : ""}
+                  className={
+                    (r.path === selected ? "selected" : "") +
+                    (err
+                      ? " has-err"
+                      : typeof s === "object" && isPending(s)
+                        ? " pending"
+                        : "")
+                  }
                 >
                   <button
                     className="row"
-                    title={r.path}
-                    onClick={() => {
-                      setSelected(r.path);
-                      setDiff(null);
-                    }}
+                    title={collapsed ? `${r.name}\n${r.path}` : r.path}
+                    onClick={() => selectRepo(r.path)}
                   >
-                    <span className="repo-name">{r.name}</span>
-                    <span className="repo-branch">⎇ {r.branch ?? "—"}</span>
+                    <span
+                      className="avatar"
+                      style={{ "--h": hue(r.name) } as React.CSSProperties}
+                    >
+                      {initials(r.name)}
+                    </span>
+                    <span className="repo-text">
+                      <span className="repo-name">{r.name}</span>
+                      <span className="repo-branch">⎇ {r.branch ?? "—"}</span>
+                    </span>
                   </button>
                   <span className="badges">
                     {typeof s === "object" && (
                       <>
                         {s.files.length > 0 && (
-                          <span className="badge changes">{s.files.length}</span>
+                          <span className="badge changes">
+                            {s.files.length}
+                          </span>
                         )}
-                        {s.ahead > 0 && <span className="badge">↑{s.ahead}</span>}
+                        {s.ahead > 0 && (
+                          <span className="badge">↑{s.ahead}</span>
+                        )}
                         {s.behind > 0 && (
                           <span className="badge">↓{s.behind}</span>
                         )}
@@ -295,10 +402,7 @@ function App() {
                     className="icon remove"
                     aria-label={`Remove ${r.name}`}
                     title="Remove from list"
-                    onClick={() => {
-                      if (r.path === selected) setSelected(null);
-                      call("remove_repo", { path: r.path });
-                    }}
+                    onClick={() => removeRepo(r.path)}
                   >
                     ×
                   </button>
@@ -309,158 +413,169 @@ function App() {
         )}
       </aside>
 
-      <section className="files">
-        {!selRepo ? (
-          <div className="empty">
-            <p>Select a repository to see its changes.</p>
-          </div>
-        ) : typeof sel === "string" ? (
-          <div className="empty">
-            <p className="err-text">{sel}</p>
-          </div>
-        ) : !sel ? (
-          <div className="empty">
-            <span className="spin">↻</span>
-          </div>
-        ) : (
-          <>
-            <header className="pane-head repo-head">
-              <div className="grow">
-                <h2>{selRepo.name}</h2>
-                <span className="repo-branch">
-                  ⎇ {sel.branch}
-                  {sel.upstream && ` → ${sel.upstream}`}
-                </span>
-              </div>
-            </header>
-            <div className="sync">
-              <button
-                disabled={busy[selected!] || (sel.ahead === 0 && !!sel.upstream)}
-                onClick={() => openRemote(selected!, "push_dry_run", "push")}
-              >
-                ↑ Push{sel.ahead > 0 && <b>{sel.ahead}</b>}
-              </button>
-              <button
-                disabled={busy[selected!] || !sel.upstream}
-                onClick={() => openRemote(selected!, "pull_preview", "pull")}
-              >
-                ↓ Pull{sel.behind > 0 && <b>{sel.behind}</b>}
-              </button>
-              {busy[selected!] && <span className="spin">↻</span>}
+      {selRepo && (
+        <section className="files">
+          {typeof sel === "string" ? (
+            <div className="empty">
+              <p className="err-text">{sel}</p>
             </div>
-            {sel.files.length === 0 ? (
-              <div className="empty">
-                <p>✓ Working tree clean</p>
-              </div>
-            ) : (
-              <>
-                <label className="toggle all">
-                  <input
-                    type="checkbox"
-                    checked={checked.length === sel.files.length}
-                    ref={(el) => {
-                      if (el)
-                        el.indeterminate =
-                          checked.length > 0 &&
-                          checked.length < sel.files.length;
-                    }}
-                    onChange={(e) =>
-                      setChecked(
-                        e.target.checked ? sel.files.map((f) => f.path) : [],
-                      )
-                    }
-                  />
-                  {sel.files.length} changed file
-                  {sel.files.length === 1 ? "" : "s"}
-                </label>
-                <ul className="file-list">
-                  {sel.files.map((f) => {
-                    const slash = f.path.lastIndexOf("/");
-                    return (
-                      <li
-                        key={f.path}
-                        className={diff?.file === f.path ? "selected" : ""}
-                        title={f.path}
-                        onClick={() =>
-                          showDiff(selected!, f.path, f.status === "?")
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${f.path}`}
-                          checked={checked.includes(f.path)}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) =>
-                            setChecked(
-                              e.target.checked
-                                ? [...checked, f.path]
-                                : checked.filter((c) => c !== f.path),
-                            )
-                          }
-                        />
-                        <span className="file-name">
-                          {f.path.slice(slash + 1)}
-                          {slash > 0 && (
-                            <span className="dir">
-                              {f.path.slice(0, slash)}
-                            </span>
-                          )}
-                        </span>
-                        <span className="status" data-s={f.status}>
-                          {f.status === "?" ? "U" : f.status}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            )}
-            <form
-              className="commit"
-              onSubmit={(e) => {
-                e.preventDefault();
-                openPreview(selected!);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
-                  e.currentTarget.requestSubmit();
-              }}
-            >
-              <div className="summary">
-                <input
-                  placeholder="Summary (required)"
-                  aria-label="Commit summary"
-                  value={summary}
-                  onChange={(e) => setSummary(e.target.value)}
-                />
-                {summary.length > 0 && (
-                  <span className={summary.length > 72 ? "count over" : "count"}>
-                    {72 - summary.length}
+          ) : !sel ? (
+            <div className="empty">
+              <span className="spin">↻</span>
+            </div>
+          ) : (
+            <>
+              <header className="pane-head repo-head">
+                <div className="grow">
+                  <h2>{selRepo.name}</h2>
+                  <span className="repo-branch">
+                    ⎇ {sel.branch}
+                    {sel.upstream && ` → ${sel.upstream}`}
                   </span>
-                )}
+                </div>
+              </header>
+              <div className="sync">
+                <button
+                  disabled={
+                    busy[selected!] || (sel.ahead === 0 && !!sel.upstream)
+                  }
+                  onClick={() => openRemote(selected!, "push_dry_run", "push")}
+                >
+                  ↑ Push{sel.ahead > 0 && <b>{sel.ahead}</b>}
+                </button>
+                <button
+                  disabled={busy[selected!] || !sel.upstream}
+                  onClick={() => openRemote(selected!, "pull_preview", "pull")}
+                >
+                  ↓ Pull{sel.behind > 0 && <b>{sel.behind}</b>}
+                </button>
+                {busy[selected!] && <span className="spin">↻</span>}
               </div>
-              <textarea
-                placeholder="Description"
-                aria-label="Commit description"
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-              <button
-                className="primary"
-                title="⌘↵"
-                disabled={!summary.trim() || !checked.length}
+              {sel.files.length === 0 ? (
+                <div className="empty">
+                  <p>✓ Working tree clean</p>
+                </div>
+              ) : (
+                <>
+                  <label className="toggle all">
+                    <input
+                      type="checkbox"
+                      checked={checked.length === sel.files.length}
+                      ref={(el) => {
+                        if (el)
+                          el.indeterminate =
+                            checked.length > 0 &&
+                            checked.length < sel.files.length;
+                      }}
+                      onChange={(e) =>
+                        setChecked(
+                          e.target.checked ? sel.files.map((f) => f.path) : [],
+                        )
+                      }
+                    />
+                    {sel.files.length} changed file
+                    {sel.files.length === 1 ? "" : "s"}
+                  </label>
+                  <ul className="file-list">
+                    {sel.files.map((f) => {
+                      const slash = f.path.lastIndexOf("/");
+                      return (
+                        <li
+                          key={f.path}
+                          className={diff?.file === f.path ? "selected" : ""}
+                          title={f.path}
+                          onClick={() =>
+                            showDiff(selected!, f.path, f.status === "?")
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${f.path}`}
+                            checked={checked.includes(f.path)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) =>
+                              setChecked(
+                                e.target.checked
+                                  ? [...checked, f.path]
+                                  : checked.filter((c) => c !== f.path),
+                              )
+                            }
+                          />
+                          <span className="file-name">
+                            {f.path.slice(slash + 1)}
+                            {slash > 0 && (
+                              <span className="dir">
+                                {f.path.slice(0, slash)}
+                              </span>
+                            )}
+                          </span>
+                          <span className="status" data-s={f.status}>
+                            {f.status === "?" ? "U" : f.status}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+              <form
+                className="commit"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  openPreview(selected!);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                    e.currentTarget.requestSubmit();
+                }}
               >
-                Commit {checked.length} file{checked.length === 1 ? "" : "s"}
-              </button>
-            </form>
-          </>
-        )}
-      </section>
+                <div className="summary">
+                  <input
+                    placeholder="Summary (required)"
+                    aria-label="Commit summary"
+                    value={summary}
+                    onChange={(e) => setSummary(e.target.value)}
+                  />
+                  {summary.length > 0 && (
+                    <span
+                      className={summary.length > 72 ? "count over" : "count"}
+                    >
+                      {72 - summary.length}
+                    </span>
+                  )}
+                </div>
+                <textarea
+                  placeholder="Description"
+                  aria-label="Commit description"
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                />
+                <button
+                  className="primary"
+                  title="⌘↵"
+                  disabled={!summary.trim() || !checked.length}
+                >
+                  Commit {checked.length} file{checked.length === 1 ? "" : "s"}
+                </button>
+              </form>
+            </>
+          )}
+        </section>
+      )}
 
       <main className="diff-pane">
         {!diff ? (
           <div className="empty">
-            <p>Select a file to view its diff.</p>
+            {selRepo ? (
+              <p>Select a file to view its diff.</p>
+            ) : repos.length > 0 ? (
+              <p>Select a repository to see its changes.</p>
+            ) : (
+              <>
+                <h2>Welcome</h2>
+                <p>Add a local repository or clone one to get started.</p>
+              </>
+            )}
           </div>
         ) : (
           <>
@@ -502,6 +617,67 @@ function App() {
             ×
           </button>
         </div>
+      )}
+
+      {clone && (
+        <dialog
+          ref={(d) => {
+            if (d && !d.open) d.showModal();
+          }}
+          onClose={() => setClone(null)}
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              doClone();
+            }}
+          >
+            <h3>Clone repository</h3>
+            <div className="fields">
+              <label>
+                Repository URL
+                <input
+                  autoFocus
+                  placeholder="https://github.com/org/repo.git"
+                  value={clone.url}
+                  disabled={clone.busy}
+                  onChange={(e) => setClone({ ...clone, url: e.target.value })}
+                />
+              </label>
+              <label>
+                Location
+                <span className="pick">
+                  <input
+                    readOnly
+                    placeholder="Choose a parent folder…"
+                    value={clone.parent}
+                    onClick={pickCloneParent}
+                  />
+                  <button
+                    type="button"
+                    disabled={clone.busy}
+                    onClick={pickCloneParent}
+                  >
+                    Choose…
+                  </button>
+                </span>
+              </label>
+              {clone.error && <pre className="err-text">{clone.error}</pre>}
+            </div>
+            <footer>
+              <button type="button" onClick={() => setClone(null)}>
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={clone.busy || !clone.url.trim() || !clone.parent}
+              >
+                {clone.busy && <span className="spin">↻</span>}
+                {clone.busy ? "Cloning…" : "Clone"}
+              </button>
+            </footer>
+          </form>
+        </dialog>
       )}
 
       {preview && (

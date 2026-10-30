@@ -185,10 +185,20 @@ textarea:focus {
 /* ---------- layout ---------- */
 
 .app {
+  --side-w: clamp(220px, 22vw, 300px);
   display: grid;
-  grid-template-columns: clamp(200px, 20vw, 280px) clamp(260px, 26vw, 360px) 1fr;
+  grid-template-columns: var(--side-w) 1fr;
   height: 100vh;
   overflow: hidden;
+  transition: grid-template-columns 0.2s ease;
+}
+
+.app.has-repo {
+  grid-template-columns: var(--side-w) clamp(260px, 28vw, 380px) 1fr;
+}
+
+.app.collapsed {
+  --side-w: 60px;
 }
 
 .sidebar,
@@ -257,6 +267,12 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.empty h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .toggle {
   display: flex;
   align-items: center;
@@ -296,10 +312,9 @@ textarea:focus {
 .repo-list .row {
   flex: 1;
   min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 8px 8px 8px 10px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 7px 8px;
   border: none;
   background: transparent;
   text-align: left;
@@ -307,6 +322,98 @@ textarea:focus {
 
 .repo-list .row:hover {
   background: transparent !important;
+}
+
+.repo-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.avatar {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--h) 65% 55%),
+    hsl(calc(var(--h) + 40) 65% 45%)
+  );
+}
+
+/* status dot on the avatar */
+li.pending .avatar::after,
+li.has-err .avatar::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--accent);
+}
+
+li.has-err .avatar::after {
+  background: var(--del);
+}
+
+li.selected .avatar {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+
+/* ---------- collapsed rail ---------- */
+
+.collapsed .pane-head {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.collapsed .pane-head h1,
+.collapsed .pane-head button:not(:first-child),
+.collapsed .toggle,
+.collapsed .repo-text,
+.collapsed .badges,
+.collapsed .remove {
+  display: none;
+}
+
+.collapsed .repo-list {
+  padding: 8px 0;
+}
+
+.collapsed .repo-list li {
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.collapsed .repo-list li,
+.collapsed .repo-list li:hover,
+.collapsed .repo-list li.selected {
+  background: transparent;
+}
+
+.collapsed .repo-list .row {
+  flex: none;
+  padding: 2px;
+}
+
+.collapsed .repo-list .row:hover .avatar {
+  transform: scale(1.06);
+}
+
+.avatar {
+  transition: transform 0.12s;
 }
 
 .repo-name {
@@ -632,4 +739,37 @@ dialog footer {
   justify-content: flex-end;
   gap: 8px;
   padding: 0 20px 16px;
+}
+
+dialog form {
+  display: contents;
+}
+
+dialog .fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 500;
+}
+
+dialog .pick {
+  display: flex;
+  gap: 8px;
+}
+
+dialog .pick input {
+  cursor: pointer;
+}
+
+dialog .fields pre {
+  margin: 0;
+  background: var(--del-bg);
+  color: var(--del);
 }

@@ -3,7 +3,8 @@ mod git;
 use git::{parse_status, run_git, run_git_codes, Status};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 #[derive(Serialize)]
 struct Repo {
@@ -60,6 +61,27 @@ fn add_repo(app: AppHandle, path: String) -> Result<(), String> {
     }
     repos.push(root);
     save(&app, &repos)
+}
+
+/// `https://host/org/name.git/` → `name`
+fn clone_dir_name(url: &str) -> Option<&str> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty()).then_some(name)
+}
+
+/// Clones `url` into `parent/<name>`, adds it to the list, returns the new path.
+#[tauri::command(async)]
+fn clone_repo(app: AppHandle, url: String, parent: String) -> Result<String, String> {
+    let name = clone_dir_name(url.trim()).ok_or("can't derive a folder name from that URL")?;
+    let dest = Path::new(&parent).join(name);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    run_git(Path::new(&parent), &["clone", "--", url.trim(), name])?;
+    let dest = dest.to_string_lossy().into_owned();
+    add_repo(app, dest.clone())?;
+    Ok(dest)
 }
 
 #[tauri::command]
@@ -187,11 +209,52 @@ fn pull(path: String) -> Result<(), String> {
     })
 }
 
+/// Platform default menu (keeps Edit → copy/paste) with our items prepended to File / View.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let menu = Menu::default(app)?;
+    let item = |id: &str, text: &str, key: Option<&str>| MenuItem::with_id(app, id, text, true, key);
+    let sub = |name: &str| -> tauri::Result<Option<Submenu<Wry>>> {
+        Ok(menu.items()?.into_iter().find_map(|i| {
+            i.as_submenu().filter(|s| s.text().is_ok_and(|t| t == name)).cloned()
+        }))
+    };
+    let file = match sub("File")? {
+        Some(f) => f,
+        None => {
+            let f = Submenu::new(app, "File", true)?;
+            menu.prepend(&f)?;
+            f
+        }
+    };
+    file.prepend_items(&[
+        &item("add_repo", "Add Repository…", Some("CmdOrCtrl+O"))?,
+        &item("clone_repo", "Clone Repository…", Some("CmdOrCtrl+Shift+O"))?,
+        &PredefinedMenuItem::separator(app)?,
+        &item("fetch_all", "Fetch All", Some("CmdOrCtrl+Shift+F"))?,
+        &item("remove_repo", "Remove Repository from List", None)?,
+        &PredefinedMenuItem::separator(app)?,
+    ])?;
+    let toggle = item("toggle_sidebar", "Toggle Sidebar", Some("CmdOrCtrl+B"))?;
+    match sub("View")? {
+        Some(v) => v.prepend(&toggle)?,
+        None => file.insert(&toggle, 5)?,
+    }
+    Ok(menu)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_repos, add_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push, pull_preview, pull])
+        .setup(|app| {
+            app.set_menu(build_menu(app.handle())?)?;
+            // the frontend switches on the item id; predefined items have random ids and are ignored
+            app.on_menu_event(|app, e| {
+                let _ = app.emit("menu", e.id().0.as_str());
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![list_repos, add_repo, clone_repo, remove_repo, repo_status, fetch, file_diff, commit_preview, commit, push_dry_run, push, pull_preview, pull])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -199,6 +262,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clone_dir_names() {
+        assert_eq!(clone_dir_name("https://github.com/a/b.git"), Some("b"));
+        assert_eq!(clone_dir_name("https://github.com/a/b/"), Some("b"));
+        assert_eq!(clone_dir_name("git@github.com:a/b.git"), Some("b"));
+        assert_eq!(clone_dir_name("git@host:b.git"), Some("b"));
+        assert_eq!(clone_dir_name(".git"), None);
+    }
 
     #[test]
     fn file_diff_cases() {
